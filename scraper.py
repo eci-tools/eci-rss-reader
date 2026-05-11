@@ -42,66 +42,77 @@ for link_tag in all_links:
             detail_res = requests.get(full_url, headers=headers)
             detail_soup = BeautifulSoup(detail_res.content, 'html.parser')
             
-            # --- SCALPEL CLEANUP 1: Targeted System Phrase Removal ---
-            # Instead of destroying text, we safely remove the specific HTML tags holding these phrases
+            # --- SCALPEL CLEANUP: Targeted System Phrase Removal ---
             system_phrases = [
                 "To be able to add comments",
                 "The opinions expressed on the ECI Forum",
                 "Want to support an initiative?",
                 "Need to know more about current or past initiatives?"
             ]
-            
-            # Look at paragraphs, links, and small div blocks
-            for tag in detail_soup.find_all(['p', 'span', 'a', 'em', 'small', 'div']):
-                tag_text = tag.get_text(strip=True)
-                # Safety check: Only delete if the block is small (so we don't accidentally delete the whole page)
-                if len(tag_text) < 350: 
-                    if any(phrase in tag_text for phrase in system_phrases):
+            # Safely remove only the specific small paragraphs holding these phrases
+            for tag in detail_soup.find_all(['p', 'div', 'span', 'em']):
+                text = tag.get_text(strip=True)
+                if 0 < len(text) < 300: 
+                    if any(phrase in text for phrase in system_phrases):
                         tag.decompose()
 
-            # --- SCALPEL CLEANUP 2: Remove the comment section & footer entirely ---
-            cleanup_selectors = [
-                '#comments', '.field--name-comment', '.comments-wrapper',
-                'section[data-drupal-selector*="comment"]', '.add-comment-form', 
-                '.ecl-footer'
-            ]
-            for selector in cleanup_selectors:
-                for match in detail_soup.select(selector):
-                    match.decompose()
+            # --- FEATURE: Extract & Separate Comments ---
+            comments_html = ""
+            comment_section = detail_soup.select_one('#comments, .comments-wrapper, section[data-drupal-selector*="comment"]')
+            
+            if comment_section:
+                comments = comment_section.select('article.comment, .comment')
+                if comments:
+                    # Create a nice visual break for the comments section
+                    comments_html = "<br><br><hr><h3>Community Discussion:</h3>"
+                    for c in comments:
+                        c_author = c.select_one('.username, .author, .field--name-uid')
+                        c_author_text = c_author.get_text(strip=True) if c_author else "Anonymous"
+                        
+                        c_body = c.select_one('.field--name-comment-body, .content')
+                        c_body_text = c_body.decode_contents() if c_body else c.get_text(separator="<br>")
+                        
+                        # Format each comment with a slight indent and a grey line on the left
+                        comments_html += f"<div style='margin-bottom: 15px; padding-left: 15px; border-left: 3px solid #ccc;'><b>{c_author_text}</b><br>{c_body_text}</div>"
+                
+                # CRITICAL: Destroy the comment section so it doesn't bleed into the main text!
+                comment_section.decompose()
+
+            # --- EXTRACTION: Author ---
+            author_element = detail_soup.select_one('.field--name-field-author, .author, .username, [about*="/user/"]')
+            author_name = author_element.get_text(strip=True) if author_element else "ECI Contributor"
 
             # --- EXTRACTION: Date ---
             pub_date = None
             date_tag = detail_soup.select_one('time, .field--name-created, span.date')
             if date_tag:
-                # Try to get the formal datetime attribute first
-                if date_tag.has_attr('datetime'):
-                    try: 
+                try:
+                    if date_tag.has_attr('datetime'):
                         pub_date = parser.parse(date_tag['datetime'])
-                    except: pass
-                # If that fails, read the text (using fuzzy=True to ignore words like "Submitted on")
-                if not pub_date:
-                    try: 
+                    elif date_tag.has_attr('content'):
+                        pub_date = parser.parse(date_tag['content'])
+                    else:
                         pub_date = parser.parse(date_tag.get_text(strip=True), fuzzy=True)
-                    except: pass
+                except: pass
             
             if not pub_date:
                 pub_date = datetime.datetime.now(pytz.utc)
-
-            # --- EXTRACTION: Author ---
-            # We look for standard author classes or links to user profiles
-            author_element = detail_soup.select_one('.field--name-field-author, .author, .username, [about*="/user/"]')
-            author_name = author_element.get_text(strip=True) if author_element else "ECI Contributor"
+                
+            # Timezone Safety Check (Fixes the missing dates issue!)
+            if pub_date.tzinfo is None:
+                pub_date = pytz.utc.localize(pub_date)
 
             # --- EXTRACTION: Body ---
             content_block = detail_soup.select_one('.field--name-field-idea-description, .field--name-body, .node__content')
-            
             if content_block:
-                full_text = content_block.decode_contents()
+                main_text = content_block.decode_contents()
             else:
-                article_container = detail_soup.select_one('article') or detail_soup
+                article_container = detail_soup.select_one('article.node--type-idea, main, .region-content') or detail_soup
                 paragraphs = article_container.find_all('p')
-                # Filter out tiny text chunks to keep the reading experience clean
-                full_text = "<br><br>".join([p.decode_contents() for p in paragraphs if len(p.text.strip()) > 20])
+                main_text = "<br><br>".join([p.decode_contents() for p in paragraphs if len(p.get_text(strip=True)) > 20])
+
+            # Combine the Main Article and the Formatted Comments
+            full_text = main_text + comments_html
 
             # 5. Add Entry to the Feed
             fe = fg.add_entry()
