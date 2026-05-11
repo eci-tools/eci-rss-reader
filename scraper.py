@@ -58,10 +58,34 @@ for link_tag in all_links:
             # Extract the main body content
             content_block = detail_soup.select_one('.field--name-field-idea-description, .node__content, .clearfix.text-formatted, article')
             
+# Extract the main body content using a prioritized list of Drupal/EU CSS classes
+            content_block = None
+            possible_selectors = [
+                '.field--name-body', 
+                '.field--name-field-idea-description', 
+                '.layout__region--content .text-formatted',
+                '.node__content',
+                '.block-system-main-block'
+            ]
+            
+            for selector in possible_selectors:
+                content_block = detail_soup.select_one(selector)
+                # Ensure the block we found actually has text in it (more than 50 characters)
+                if content_block and len(content_block.text.strip()) > 50:
+                    break 
+            
             if content_block:
                 full_text = content_block.decode_contents()
             else:
-                full_text = "Full text could not be extracted. Please click the link to read."
+                # FALLBACK "NUCLEAR" OPTION: If all layout tags fail, just grab all the paragraphs!
+                paragraphs = detail_soup.find_all('p')
+                # We filter out tiny paragraphs (like footer links or "Login" text)
+                article_text = [p.decode_contents() for p in paragraphs if len(p.text.strip()) > 30]
+                
+                if article_text:
+                    full_text = "<br><br>".join(article_text)
+                else:
+                    full_text = "Full text could not be extracted. Please click the link to read."
 
             # Find the date
             date_tag = detail_soup.select_one('time')
