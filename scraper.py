@@ -4,7 +4,6 @@ from feedgen.feed import FeedGenerator
 from dateutil import parser
 import datetime
 import pytz
-import re
 
 # 1. Setup the Feed Metadata
 fg = FeedGenerator()
@@ -43,54 +42,73 @@ for link_tag in all_links:
             detail_res = requests.get(full_url, headers=headers)
             detail_soup = BeautifulSoup(detail_res.content, 'html.parser')
             
-            # --- CLEANUP 1: Remove defined comment and system blocks ---
+            # --- SCALPEL CLEANUP 1: Targeted System Phrase Removal ---
+            # Instead of destroying text, we safely remove the specific HTML tags holding these phrases
+            system_phrases = [
+                "To be able to add comments",
+                "The opinions expressed on the ECI Forum",
+                "Want to support an initiative?",
+                "Need to know more about current or past initiatives?"
+            ]
+            
+            # Look at paragraphs, links, and small div blocks
+            for tag in detail_soup.find_all(['p', 'span', 'a', 'em', 'small', 'div']):
+                tag_text = tag.get_text(strip=True)
+                # Safety check: Only delete if the block is small (so we don't accidentally delete the whole page)
+                if len(tag_text) < 350: 
+                    if any(phrase in tag_text for phrase in system_phrases):
+                        tag.decompose()
+
+            # --- SCALPEL CLEANUP 2: Remove the comment section & footer entirely ---
             cleanup_selectors = [
                 '#comments', '.field--name-comment', '.comments-wrapper',
-                'section[data-drupal-selector*="comment"]', '.add-comment-form',
-                '.ecl-footer', '.ecl-header', 'nav'
+                'section[data-drupal-selector*="comment"]', '.add-comment-form', 
+                '.ecl-footer'
             ]
             for selector in cleanup_selectors:
                 for match in detail_soup.select(selector):
                     match.decompose()
 
-            # --- EXTRACTION: Find the Article Body ---
+            # --- EXTRACTION: Date ---
+            pub_date = None
+            date_tag = detail_soup.select_one('time, .field--name-created, span.date')
+            if date_tag:
+                # Try to get the formal datetime attribute first
+                if date_tag.has_attr('datetime'):
+                    try: 
+                        pub_date = parser.parse(date_tag['datetime'])
+                    except: pass
+                # If that fails, read the text (using fuzzy=True to ignore words like "Submitted on")
+                if not pub_date:
+                    try: 
+                        pub_date = parser.parse(date_tag.get_text(strip=True), fuzzy=True)
+                    except: pass
+            
+            if not pub_date:
+                pub_date = datetime.datetime.now(pytz.utc)
+
+            # --- EXTRACTION: Author ---
+            # We look for standard author classes or links to user profiles
+            author_element = detail_soup.select_one('.field--name-field-author, .author, .username, [about*="/user/"]')
+            author_name = author_element.get_text(strip=True) if author_element else "ECI Contributor"
+
+            # --- EXTRACTION: Body ---
             content_block = detail_soup.select_one('.field--name-field-idea-description, .field--name-body, .node__content')
             
             if content_block:
-                # Get the HTML
                 full_text = content_block.decode_contents()
             else:
-                # Fallback to general content
                 article_container = detail_soup.select_one('article') or detail_soup
                 paragraphs = article_container.find_all('p')
+                # Filter out tiny text chunks to keep the reading experience clean
                 full_text = "<br><br>".join([p.decode_contents() for p in paragraphs if len(p.text.strip()) > 20])
-
-            # --- CLEANUP 2: Remove specific "System Sentences" via RegEx ---
-            # This removes the "To be able to add comments" and "The opinions expressed" blocks
-            system_phrases = [
-                r"To be able to add comments, you need to authenticate or register\.",
-                r"The opinions expressed on the ECI Forum reflect solely the point of view.*",
-                r"Want to support an initiative\?.*",
-                r"Need to know more about current or past initiatives\?.*"
-            ]
-            for phrase in system_phrases:
-                full_text = re.sub(phrase, "", full_text, flags=re.IGNORECASE | re.DOTALL)
-
-            # --- AUTHOR EXTRACTION ---
-            # On the detail page, authors are usually in a field called "field--name-field-author"
-            author_element = detail_soup.select_one('.field--name-field-author, .author, .username')
-            author_name = author_element.text.strip() if author_element else "ECI Contributor"
-
-            # Find Publication Date
-            date_tag = detail_soup.select_one('time')
-            pub_date = parser.parse(date_tag['datetime']) if date_tag and date_tag.has_attr('datetime') else datetime.datetime.now(pytz.utc)
 
             # 5. Add Entry to the Feed
             fe = fg.add_entry()
             fe.id(full_url)
             fe.title(title)
             fe.link(href=full_url)
-            fe.author(name=author_name) # This adds the author back!
+            fe.author(name=author_name) 
             fe.content(full_text, type='html')
             fe.published(pub_date)
             
