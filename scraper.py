@@ -25,7 +25,7 @@ forum_url = f"{base_url}/discussion-forum_en?sort_type=recent"
 response = requests.get(forum_url, headers=headers)
 soup = BeautifulSoup(response.content, 'html.parser')
 
-# Look for the article cards directly on the main page!
+# Look for the article cards directly on the main page
 articles = soup.select('article.ecl-card')
 count = 0
 
@@ -47,9 +47,7 @@ for article in articles[:10]:
         pub_date = None
         if date_li:
             try:
-                # It will read "11 May 2026" and format it perfectly
                 pub_date = parser.parse(date_li.text.strip())
-                # Add timezone so the RSS reader accepts it
                 if pub_date.tzinfo is None:
                     pub_date = pytz.utc.localize(pub_date)
             except: pass
@@ -62,55 +60,53 @@ for article in articles[:10]:
         
         # --- 5. EXTRACT & FORMAT COMMENTS ---
         comments_html = ""
-        # The HTML shows every comment has an ID starting with "comment-"
         comment_divs = detail_soup.select('div[id^="comment-"]')
         
         if comment_divs:
             comments_html += "<br><br><hr><h3>Community Discussion:</h3>"
             for c in comment_divs:
-                # Get the header (Image + Name | Date)
                 info_div = c.select_one('.ecl-u-mb-s')
                 c_info = info_div.text.replace('\n', '').strip() if info_div else "Comment"
-                c_info = " ".join(c_info.split()) # Cleans up the wide spacing
+                c_info = " ".join(c_info.split()) 
                 
-                # Get the comment text body
                 body_div = c.select_one('.ecl-u-mb-m .ecl')
                 c_body = body_div.decode_contents() if body_div else ""
                 
-                # Style it with an indent and a grey line
                 comments_html += f"<div style='margin-bottom: 15px; padding-left: 15px; border-left: 3px solid #ccc;'><b>{c_info}</b><br>{c_body}</div>"
 
         # --- 6. CLEANUP (Destroy Noise Before Extracting Main Text) ---
         cleanup_selectors = [
             '.comments-section', 'div[id^="comment-"]', 
-            '.eci-vote-widget', '.ecl-social-media-share'
+            '.eci-vote-widget', '.ecl-social-media-share',
+            '.ecl-description-list' # Removes the "Categories" block
         ]
         for selector in cleanup_selectors:
             for match in detail_soup.select(selector):
                 match.decompose()
 
-        # Destroy Specific System Phrases using the Blockquote/Paragraphs
+        # Destroy Specific System Phrases SAFELY
         system_phrases = [
             "To be able to add comments", 
             "The opinions expressed on the ECI Forum",
             "Want to support an initiative?",
             "Need to know more about current or past initiatives?"
         ]
-        for tag in detail_soup.find_all(['blockquote', 'p', 'div']):
-            if any(phrase in tag.text for phrase in system_phrases):
-                tag.decompose()
+        # CRITICAL FIX: The "len(text) < 300" prevents the script from accidentally deleting the whole article!
+        for tag in detail_soup.find_all(['blockquote', 'p', 'div', 'span', 'footer']):
+            text = tag.get_text(strip=True)
+            if 0 < len(text) < 300: 
+                if any(phrase in text for phrase in system_phrases):
+                    tag.decompose()
 
         # --- 7. EXTRACT MAIN TEXT ---
-        # With the noise gone, the main text sits cleanly in the .ecl wrapper
-        content_block = detail_soup.select_one('.ecl-col-m-12 .ecl')
+        # Grab the first match of the main text block so we don't cut anything off
+        content_block = detail_soup.select_one('.ecl-row .ecl-col-m-12 .ecl')
         if content_block:
             main_text = content_block.decode_contents()
         else:
-            # The Meta Tag Fallback you suggested!
             meta_desc = detail_soup.select_one('meta[name="description"]')
             main_text = meta_desc['content'] if meta_desc else "Full text could not be parsed."
 
-        # Combine main article and comments
         full_text = main_text + comments_html
 
         # --- 8. ADD TO FEED ---
@@ -118,7 +114,8 @@ for article in articles[:10]:
         fe.id(full_url)
         fe.title(title)
         fe.link(href=full_url)
-        fe.author(name=author_name)
+        # CRITICAL FIX: Passed author as a dictionary so Thunderbird recognizes it
+        fe.author({'name': author_name}) 
         fe.content(full_text, type='html')
         fe.published(pub_date)
         
