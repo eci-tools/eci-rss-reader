@@ -25,111 +25,109 @@ forum_url = f"{base_url}/discussion-forum_en?sort_type=recent"
 response = requests.get(forum_url, headers=headers)
 soup = BeautifulSoup(response.content, 'html.parser')
 
-all_links = soup.find_all('a', href=True)
-processed_urls = set()
+# Look for the article cards directly on the main page!
+articles = soup.select('article.ecl-card')
 count = 0
 
-for link_tag in all_links:
-    href = link_tag['href']
-    if '/discussion-forum/idea/' in href:
-        full_url = href if href.startswith('http') else base_url + href
-        if full_url in processed_urls: continue
-        title = link_tag.text.strip()
-        if len(title) < 5: continue
-        processed_urls.add(full_url)
+for article in articles[:10]:
+    try:
+        # --- EXTRACT LINK & TITLE ---
+        a_tag = article.select_one('.ecl-content-block__title a')
+        if not a_tag: continue
+        title = a_tag.text.strip()
+        link = a_tag['href']
+        full_url = link if link.startswith('http') else base_url + link
         
-        try:
-            detail_res = requests.get(full_url, headers=headers)
-            detail_soup = BeautifulSoup(detail_res.content, 'html.parser')
-            
-            # --- SCALPEL CLEANUP: Targeted System Phrase Removal ---
-            system_phrases = [
-                "To be able to add comments",
-                "The opinions expressed on the ECI Forum",
-                "Want to support an initiative?",
-                "Need to know more about current or past initiatives?"
-            ]
-            # Safely remove only the specific small paragraphs holding these phrases
-            for tag in detail_soup.find_all(['p', 'div', 'span', 'em']):
-                text = tag.get_text(strip=True)
-                if 0 < len(text) < 300: 
-                    if any(phrase in text for phrase in system_phrases):
-                        tag.decompose()
+        # --- EXTRACT AUTHOR (Directly from main page) ---
+        author_div = article.select_one('.ecl-content-block__description .ecl-u-mb-l')
+        author_name = author_div.text.strip() if author_div else "ECI Contributor"
+        
+        # --- EXTRACT DATE (Directly from main page) ---
+        date_li = article.select_one('.ecl-content-block__primary-meta-item')
+        pub_date = None
+        if date_li:
+            try:
+                # It will read "11 May 2026" and format it perfectly
+                pub_date = parser.parse(date_li.text.strip())
+                # Add timezone so the RSS reader accepts it
+                if pub_date.tzinfo is None:
+                    pub_date = pytz.utc.localize(pub_date)
+            except: pass
+        if not pub_date:
+            pub_date = datetime.datetime.now(pytz.utc)
 
-            # --- FEATURE: Extract & Separate Comments ---
-            comments_html = ""
-            comment_section = detail_soup.select_one('#comments, .comments-wrapper, section[data-drupal-selector*="comment"]')
-            
-            if comment_section:
-                comments = comment_section.select('article.comment, .comment')
-                if comments:
-                    # Create a nice visual break for the comments section
-                    comments_html = "<br><br><hr><h3>Community Discussion:</h3>"
-                    for c in comments:
-                        c_author = c.select_one('.username, .author, .field--name-uid')
-                        c_author_text = c_author.get_text(strip=True) if c_author else "Anonymous"
-                        
-                        c_body = c.select_one('.field--name-comment-body, .content')
-                        c_body_text = c_body.decode_contents() if c_body else c.get_text(separator="<br>")
-                        
-                        # Format each comment with a slight indent and a grey line on the left
-                        comments_html += f"<div style='margin-bottom: 15px; padding-left: 15px; border-left: 3px solid #ccc;'><b>{c_author_text}</b><br>{c_body_text}</div>"
+        # --- 4. FETCH DETAIL PAGE FOR FULL TEXT ---
+        detail_res = requests.get(full_url, headers=headers)
+        detail_soup = BeautifulSoup(detail_res.content, 'html.parser')
+        
+        # --- 5. EXTRACT & FORMAT COMMENTS ---
+        comments_html = ""
+        # The HTML shows every comment has an ID starting with "comment-"
+        comment_divs = detail_soup.select('div[id^="comment-"]')
+        
+        if comment_divs:
+            comments_html += "<br><br><hr><h3>Community Discussion:</h3>"
+            for c in comment_divs:
+                # Get the header (Image + Name | Date)
+                info_div = c.select_one('.ecl-u-mb-s')
+                c_info = info_div.text.replace('\n', '').strip() if info_div else "Comment"
+                c_info = " ".join(c_info.split()) # Cleans up the wide spacing
                 
-                # CRITICAL: Destroy the comment section so it doesn't bleed into the main text!
-                comment_section.decompose()
-
-            # --- EXTRACTION: Author ---
-            author_element = detail_soup.select_one('.field--name-field-author, .author, .username, [about*="/user/"]')
-            author_name = author_element.get_text(strip=True) if author_element else "ECI Contributor"
-
-            # --- EXTRACTION: Date ---
-            pub_date = None
-            date_tag = detail_soup.select_one('time, .field--name-created, span.date')
-            if date_tag:
-                try:
-                    if date_tag.has_attr('datetime'):
-                        pub_date = parser.parse(date_tag['datetime'])
-                    elif date_tag.has_attr('content'):
-                        pub_date = parser.parse(date_tag['content'])
-                    else:
-                        pub_date = parser.parse(date_tag.get_text(strip=True), fuzzy=True)
-                except: pass
-            
-            if not pub_date:
-                pub_date = datetime.datetime.now(pytz.utc)
+                # Get the comment text body
+                body_div = c.select_one('.ecl-u-mb-m .ecl')
+                c_body = body_div.decode_contents() if body_div else ""
                 
-            # Timezone Safety Check (Fixes the missing dates issue!)
-            if pub_date.tzinfo is None:
-                pub_date = pytz.utc.localize(pub_date)
+                # Style it with an indent and a grey line
+                comments_html += f"<div style='margin-bottom: 15px; padding-left: 15px; border-left: 3px solid #ccc;'><b>{c_info}</b><br>{c_body}</div>"
 
-            # --- EXTRACTION: Body ---
-            content_block = detail_soup.select_one('.field--name-field-idea-description, .field--name-body, .node__content')
-            if content_block:
-                main_text = content_block.decode_contents()
-            else:
-                article_container = detail_soup.select_one('article.node--type-idea, main, .region-content') or detail_soup
-                paragraphs = article_container.find_all('p')
-                main_text = "<br><br>".join([p.decode_contents() for p in paragraphs if len(p.get_text(strip=True)) > 20])
+        # --- 6. CLEANUP (Destroy Noise Before Extracting Main Text) ---
+        cleanup_selectors = [
+            '.comments-section', 'div[id^="comment-"]', 
+            '.eci-vote-widget', '.ecl-social-media-share'
+        ]
+        for selector in cleanup_selectors:
+            for match in detail_soup.select(selector):
+                match.decompose()
 
-            # Combine the Main Article and the Formatted Comments
-            full_text = main_text + comments_html
+        # Destroy Specific System Phrases using the Blockquote/Paragraphs
+        system_phrases = [
+            "To be able to add comments", 
+            "The opinions expressed on the ECI Forum",
+            "Want to support an initiative?",
+            "Need to know more about current or past initiatives?"
+        ]
+        for tag in detail_soup.find_all(['blockquote', 'p', 'div']):
+            if any(phrase in tag.text for phrase in system_phrases):
+                tag.decompose()
 
-            # 5. Add Entry to the Feed
-            fe = fg.add_entry()
-            fe.id(full_url)
-            fe.title(title)
-            fe.link(href=full_url)
-            fe.author(name=author_name) 
-            fe.content(full_text, type='html')
-            fe.published(pub_date)
-            
-            count += 1
-            if count >= 10: break
-                
-        except Exception as e:
-            print(f"Error extracting {full_url}: {e}")
-            continue
+        # --- 7. EXTRACT MAIN TEXT ---
+        # With the noise gone, the main text sits cleanly in the .ecl wrapper
+        content_block = detail_soup.select_one('.ecl-col-m-12 .ecl')
+        if content_block:
+            main_text = content_block.decode_contents()
+        else:
+            # The Meta Tag Fallback you suggested!
+            meta_desc = detail_soup.select_one('meta[name="description"]')
+            main_text = meta_desc['content'] if meta_desc else "Full text could not be parsed."
 
-# 6. Save the XML File
+        # Combine main article and comments
+        full_text = main_text + comments_html
+
+        # --- 8. ADD TO FEED ---
+        fe = fg.add_entry()
+        fe.id(full_url)
+        fe.title(title)
+        fe.link(href=full_url)
+        fe.author(name=author_name)
+        fe.content(full_text, type='html')
+        fe.published(pub_date)
+        
+        count += 1
+        
+    except Exception as e:
+        print(f"Error extracting {full_url}: {e}")
+        continue
+
+# 9. Save the XML File
 fg.rss_file('feed.xml')
 print(f"Done! feed.xml generated with {count} items.")
