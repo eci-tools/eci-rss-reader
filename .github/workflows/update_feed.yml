@@ -1,0 +1,38 @@
+name: Update ECI RSS Feed
+
+# This tells GitHub WHEN to run the script
+on:
+  schedule:
+    - cron: '0 8,20 * * *'
+  workflow_dispatch: # This line adds a button so you can run it manually anytime!
+
+# We need to give the bot permission to save the feed.xml file back to your code
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install required tools
+        run: pip install -r requirements.txt
+
+      - name: Run the scraper script
+        run: python scraper.py
+
+      - name: Commit and push the new XML file
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add feed.xml
+          # We use || exit 0 so the script doesn't crash if there are no new articles today
+          git commit -m "Automated daily feed update" || exit 0 
+          git push
