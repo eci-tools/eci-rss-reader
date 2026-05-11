@@ -50,36 +50,38 @@ for link_tag in all_links:
         processed_urls.add(full_url)
         print(f"Found Idea: {title}")
         
-        try:
+       try:
             # 4. Open the idea page to get the full text
             detail_res = requests.get(full_url, headers=headers)
             detail_soup = BeautifulSoup(detail_res.content, 'html.parser')
             
-            # Extract the main body content
-            content_block = detail_soup.select_one('.field--name-field-idea-description, .node__content, .clearfix.text-formatted, article')
+            # --- NEW CLEANUP STEP ---
+            # Destroy the comments section before we start extracting text!
+            # These are the standard Drupal/EU CSS IDs and classes for comments.
+            for comment_area in detail_soup.select('#comments, .field--name-comment, section[data-drupal-selector*="comment"], .comments-wrapper'):
+                comment_area.decompose()
+            # ------------------------
             
-# Extract the main body content using a prioritized list of Drupal/EU CSS classes
+            # Extract the main body content
             content_block = None
             possible_selectors = [
-                '.field--name-body', 
                 '.field--name-field-idea-description', 
-                '.layout__region--content .text-formatted',
-                '.node__content',
-                '.block-system-main-block'
+                '.field--name-body', 
+                '.node__content > .clearfix.text-formatted', # Targets just the text, not the footer
+                'article.node--type-idea .node__content'
             ]
             
             for selector in possible_selectors:
                 content_block = detail_soup.select_one(selector)
-                # Ensure the block we found actually has text in it (more than 50 characters)
                 if content_block and len(content_block.text.strip()) > 50:
                     break 
             
             if content_block:
                 full_text = content_block.decode_contents()
             else:
-                # FALLBACK "NUCLEAR" OPTION: If all layout tags fail, just grab all the paragraphs!
-                paragraphs = detail_soup.find_all('p')
-                # We filter out tiny paragraphs (like footer links or "Login" text)
+                # FALLBACK: grab paragraphs, but strictly inside the main article (ignores sidebars/menus)
+                article_container = detail_soup.select_one('article, main') or detail_soup
+                paragraphs = article_container.find_all('p')
                 article_text = [p.decode_contents() for p in paragraphs if len(p.text.strip()) > 30]
                 
                 if article_text:
