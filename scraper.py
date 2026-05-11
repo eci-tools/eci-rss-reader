@@ -107,16 +107,18 @@ for article in articles[:10]:
             meta_desc = detail_soup.select_one('meta[name="description"]')
             main_text = meta_desc['content'] if meta_desc else "Full text could not be parsed."
 
-        full_text = main_text + comments_html
+        # --- 8. FORMAT FINAL CONTENT ---
+        # Inject the author prominently at the top of the email/reader view
+        full_text_with_author = f"<div style='margin-bottom: 20px; font-size: 1.1em;'><strong>Author:</strong> {author_name}</div><hr>" + main_text + comments_html
 
-        # --- 8. ADD TO FEED ---
+        # --- 9. ADD TO FEED ---
         fe = fg.add_entry()
         fe.id(full_url)
         fe.title(title)
         fe.link(href=full_url)
-        # CRITICAL FIX: Passed author as a dictionary so Thunderbird recognizes it
-        fe.author({'name': author_name}) 
-        fe.content(full_text, type='html')
+        # Dummy email ensures strict RSS readers like Thunderbird show the Author column
+        fe.author({'name': author_name, 'email': 'noreply@forum.europa.eu'}) 
+        fe.content(full_text_with_author, type='html')
         fe.published(pub_date)
         
         count += 1
@@ -125,6 +127,6 @@ for article in articles[:10]:
         print(f"Error extracting {full_url}: {e}")
         continue
 
-# 9. Save the XML File
+# 10. Save the XML File
 fg.rss_file('feed.xml')
 print(f"Done! feed.xml generated with {count} items.")
